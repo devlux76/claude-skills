@@ -9,6 +9,9 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import uuid
+
+import trailblazer_assignment as assignment
 
 
 def git(repo, *args):
@@ -75,6 +78,13 @@ def main():
     board.add_argument("--column", choices=["todo", "doing", "blocked", "done"])
     board.add_argument("--limit", type=int, default=12)
     sub.add_parser("resume")
+    assign = sub.add_parser("assign")
+    assign.add_argument("ref")
+    assign.add_argument("target", choices=["trailblazer"])
+    assign.add_argument("--check", required=True)
+    assign.add_argument("--file", action="append", default=[])
+    assign.add_argument("--dispatch-config", type=Path,
+                        default=Path.home()/".config/planner/trailblazer.json")
     add = sub.add_parser("add")
     add.add_argument("repo")
     add.add_argument("--title", required=True)
@@ -98,7 +108,30 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         db.row_factory = sqlite3.Row
         db.execute("CREATE TABLE IF NOT EXISTS claims (ref TEXT PRIMARY KEY, actor TEXT, state TEXT, plan TEXT, notes TEXT)")
+        db.execute("CREATE TABLE IF NOT EXISTS assignments (ref TEXT PRIMARY KEY, data TEXT NOT NULL)")
         claims = {r["ref"]: dict(r) for r in db.execute("SELECT * FROM claims")}
+        for row in db.execute("SELECT ref,data FROM assignments").fetchall():
+            job = json.loads(row["data"])
+            if job["state"] in ("done", "blocked"):
+                continue
+            if job.get("process") and assignment.process_identity(job.get("pid")) == job["process"]:
+                continue
+            job["state"] = "blocked"
+            job["reason"] = "Assignment supervisor stopped; reconcile the existing case before retrying."
+            held = claims.get(row["ref"])
+            if held and held["actor"] == "trailblazer" and held["state"] == "doing":
+                notes = json.loads(held["notes"])
+                notes.append({"n": len(notes)+1, "action": "block", "text": job["reason"]})
+                held.update(state="blocked", notes=json.dumps(notes))
+                with db:
+                    db.execute("UPDATE claims SET state=?,notes=? WHERE ref=?", ("blocked", held["notes"], row["ref"]))
+                owner_repo, _, owner_bug = row["ref"].partition(":")
+                if owner_repo in repos:
+                    card = show(repos[owner_repo], owner_bug)
+                    if card["status"] != "closed":
+                        mirror(repos[owner_repo], owner_bug, card, held)
+            with db:
+                db.execute("UPDATE assignments SET data=? WHERE ref=?", (json.dumps(job), row["ref"]))
         if a.command == "resume":
             return {"actor": a.actor, "cards": [{"ref": r["ref"], "state": r["state"], "plan": r["plan"],
                     "notes": [n for n in json.loads(r["notes"]) if n["action"] != "start"][-3:]} for r in claims.values()
@@ -148,6 +181,48 @@ def main():
                     "claim": {**claim, "notes": json.loads(claim["notes"])[-3:]} if claim else None}
         if b["status"] == "closed":
             raise ValueError("closed issue; do not revive old work")
+        if a.command == "assign":
+            previous = db.execute("SELECT data FROM assignments WHERE ref=?", (ref,)).fetchone()
+            history = []
+            if previous:
+                job = json.loads(previous[0])
+                if job["state"] == "blocked" and claim and claim["state"] == "todo":
+                    history = job.get("previous", [])+[{
+                        key: job[key] for key in ("id", "state", "case", "commit", "reason") if key in job}]
+                else:
+                    if job["check"] != a.check or job["files"] != a.file:
+                        raise ValueError("assignment already exists with different inputs; reconcile it first")
+                    return {"ref": ref, "assignment": job["id"], "column": column(b), "dispatched": False}
+            if name == "shared":
+                raise ValueError("assign a concrete repository part card, not a shared issue")
+            if column(b) == "done":
+                raise ValueError("verified task; do not restart")
+            if claim and claim["state"] in ("doing", "blocked"):
+                raise ValueError(f'already owned by {claim["actor"]}; reconcile with that owner')
+            if column(b) == "doing":
+                raise ValueError("already doing outside planner; reconcile the existing assignment first")
+            if any(r["actor"] == "trailblazer" and r["state"] == "doing" for r in claims.values()):
+                raise ValueError("trailblazer already has active work")
+            config = assignment.configuration(a.dispatch_config)
+            assignment.validate(repo, a.check, a.file, config)
+            plan = f"Implement {ref}; verification: {a.check}; return a candidate for review, without merging."
+            notes = json.loads(claim["notes"]) if claim else []
+            notes.append({"n": len(notes)+1, "action": "assign", "text": plan})
+            job = {"id": "planner-"+uuid.uuid4().hex, "ref": ref, "repo": str(repo),
+                   "check": a.check, "files": a.file, "state": "assigned", "previous": history,
+                   "card": {"title": b["title"], "body": b["comments"][0]["message"],
+                            "recent": [c["message"] for c in b["comments"][1:][-3:]]}}
+            new_claim = {"actor": "trailblazer", "state": "doing", "plan": plan, "notes": json.dumps(notes)}
+            with db:
+                db.execute("INSERT OR REPLACE INTO claims VALUES (?,?,?,?,?)",
+                           (ref, "trailblazer", "doing", plan, json.dumps(notes)))
+                db.execute("INSERT OR REPLACE INTO assignments VALUES (?,?)", (ref, json.dumps(job)))
+            mirror(repo, bug, b, new_claim)
+            job["pid"] = assignment.launch(a, ref, job["id"])
+            job["process"] = assignment.process_identity(job["pid"])
+            with db:
+                db.execute("UPDATE assignments SET data=? WHERE ref=?", (json.dumps(job), ref))
+            return {"ref": ref, "assignment": job["id"], "column": "doing", "dispatched": True}
         if a.command == "sync":
             if not claim or claim["actor"] != a.actor:
                 raise ValueError("only the recorded actor can repair its issue mirror")
