@@ -310,6 +310,21 @@ elif op in ('read','wait'):
         self.assertIn("deadline",card["recent"][-1].lower())
         self.assertEqual(len((self.root/"sent").read_text().splitlines()),1)
 
+    def test_concurrent_assignment_returns_same_assignment_with_one_task(self):
+        ref = self.card()
+        base = self.dispatch_fixture(ref)
+        cmd = self.base + ["--actor", "codex", "assign", ref, "trailblazer", "--check", 'test "$(cat value)" = changed', "--dispatch-config", str(self.config)]
+        workers = [subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
+        results = [p.communicate() for p in workers]
+        self.assertEqual([p.returncode for p in workers], [0, 0], results)
+        assignments = [json.loads(out) for out, _ in results]
+        self.assertEqual(assignments[0]["assignment"], assignments[1]["assignment"])
+        card = self.await_assignment(ref)
+        self.assertEqual(card["column"], "done", card)
+        self.assertEqual(len((self.root/"sent").read_text().splitlines()), 1)
+        self.assertEqual(self.run_git("rev-parse", "HEAD").strip(), base)
+        self.assertEqual((self.repo/"value").read_text(), "base\n")
+
 
 if __name__ == "__main__":
     unittest.main()
