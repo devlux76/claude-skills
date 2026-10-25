@@ -47,3 +47,12 @@ Trailblazer self-repair is forbidden. General frontier-returned fixes and
 automatic candidate integration remain separate work (trailblazer:a3339f5 and
 trailblazer:1beebca). Those are not prerequisites for producing a checked planner
 candidate, but they prevent claiming unattended repository integration.
+
+
+Verified installation (2026-10-25): planner source 2bc587c and Trailblazer
+1c86b5f. Full Elixir suite: 634 passed (4 live/integration tests excluded);
+installed planner: 21 passed. Live OTP crash recovery terminated old BEAM
+and OS verification workers. A hermetic BEAM-to-real-CLI smoke recovered a
+failed mirror without duplicate evidence or leftover verification worktrees.
+The earlier local coding trial produced a checked candidate; a second full
+coding run was intentionally avoided after the supervision correction.
