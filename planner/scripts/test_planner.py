@@ -1,15 +1,14 @@
 """Behavioral checks against real temporary git-bug repositories."""
 import json
-import os
 from pathlib import Path
 import subprocess
-import signal
 import sqlite3
 import sys
 import tempfile
-import time
 import unittest
-import trailblazer_assignment
+from unittest.mock import patch
+
+import trailblazer_assignment as assignment
 
 CLI = Path(__file__).with_name("planner.py")
 
@@ -29,18 +28,6 @@ class PlannerTest(unittest.TestCase):
         self.base = [sys.executable, str(CLI), "--repos-file", str(self.repos), "--state-dir", str(self.root/"state")]
 
     def tearDown(self):
-        database=self.root/"state/board.sqlite3"
-        if database.exists():
-            with sqlite3.connect(database) as db:
-                rows=db.execute("SELECT data FROM assignments").fetchall()
-            for row in rows:
-                job=json.loads(row[0])
-                pid=job.get("pid")
-                if pid and job.get("process") == trailblazer_assignment.process_identity(pid):
-                    try:
-                        os.killpg(pid,signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
         self.tmp.cleanup()
 
     def run_git(self, *args):
@@ -97,6 +84,17 @@ class PlannerTest(unittest.TestCase):
         self.assertEqual(after["column"], "doing")
         self.assertEqual(before["recent"], after["recent"])
 
+    def test_repeated_done_repairs_a_durable_mirror_without_duplicate_evidence(self):
+        ref=self.card()
+        self.call("start",ref,"--plan","bounded task",actor="trailblazer")
+        self.call("done",ref,"--evidence","verified candidate",actor="trailblazer")
+        self.run_git("bug","bug","label","rm",ref.split(":")[1],"status:done")
+        before=self.call("show",ref)
+        self.call("done",ref,"--evidence","verified candidate",actor="trailblazer")
+        after=self.call("show",ref)
+        self.assertEqual(after["column"],"done")
+        self.assertEqual(before["recent"],after["recent"])
+
     def test_completion_requires_nonempty_evidence_and_current_actor(self):
         ref = self.card()
         self.call("start", ref, "--plan", "claim")
@@ -121,101 +119,72 @@ class PlannerTest(unittest.TestCase):
         self.assertEqual(self.call("board")["cards"][0]["column"], "todo")
         self.call("start", ref, "--plan", "labelled on claim")
 
-    def dispatch_fixture(self, ref, changed=True, pause=False):
+    def dispatch_fixture(self, ref):
         (self.repo/"value").write_text("base\n")
-        self.run_git("add", "value")
-        self.run_git("commit", "-qm", "Fixture bug:"+ref.split(":")[1])
-        base = self.run_git("rev-parse", "HEAD").strip()
-        candidate = self.root/"candidate"
-        self.run_git("worktree", "add", "-qb", "trailblazer/fixture-case", str(candidate))
-        if changed:
-            (candidate/"value").write_text("changed\n")
-            subprocess.run(["git", "-C", str(candidate), "commit", "-qam",
-                            "Candidate bug:"+ref.split(":")[1]], check=True, capture_output=True)
-        commit = subprocess.check_output(["git", "-C", str(candidate), "rev-parse", "HEAD"], text=True).strip()
-        report = {"status": "fixed", "case": "fixture-case", "commit": commit,
-                  "branch": "trailblazer/fixture-case", "worktree": None, "files": ["value"],
-                  "check": {"status": "pass"}, "summary": "fixture candidate"}
-        (self.root/"report.json").write_text(json.dumps(report))
-        fake = self.root/"dispatch.py"
-        fake.write_text('''import json, pathlib, sys
+        self.run_git("add","value")
+        self.run_git("commit","-qm","Fixture bug:"+ref.split(":")[1])
+        base=self.run_git("rev-parse","HEAD").strip()
+        fake=self.root/"dispatch.py"
+        fake.write_text('''import json,pathlib,sys,time
 root=pathlib.Path(__file__).parent
 kind,op,*args=sys.argv[1:]
-if kind == 'case':
-    if (root/'pause').exists():
-        import time
-        (root/'worker-ready').touch()
-        while (root/'pause').exists(): time.sleep(0.05)
-    print((root/'report.json').read_text()); sys.exit(0)
-if op == 'info':
-    print(json.dumps({'peerId':'fixture-codex'}))
-elif op == 'send':
+if kind=='case':
+    if '--follow' in args:
+        (root/'followed').touch(); sys.exit(91)
+    status=(root/'case-status').read_text() if (root/'case-status').exists() else 'failed'
+    print(json.dumps({'status':status})); sys.exit(0)
+if op=='send':
     message=json.loads(args[args.index('--text')+1].split('\\n',1)[1])
     if message['type']=='task':
         with (root/'sent').open('a') as out: out.write(json.dumps(message)+'\\n')
         (root/'task.json').write_text(json.dumps(message))
     print(json.dumps({'sent':True}))
 elif op in ('read','wait'):
-    if op=='wait' and (root/'hang-admission').exists():
-        import time
-        time.sleep(100)
-    task=root/'task.json'
+    if op=='wait' and (root/'hang-admission').exists(): time.sleep(100)
     events=[]
     cursor=len((root/'sent').read_text().splitlines()) if (root/'sent').exists() else 0
     after=int(args[args.index('--after')+1])
-    if task.exists() and cursor>after:
-        request=json.loads(task.read_text())['request_id']
-        message={'protocol':'trailblazer/1','type':'accepted','id':'accept-1',
-                 'request_id':request,'payload':{'case':'fixture-case','state':'waiting_resource'}}
+    if (root/'task.json').exists() and cursor>after:
+        task=json.loads((root/'task.json').read_text())
+        kind='rejected' if (root/'reject').exists() else 'accepted'
+        message={'protocol':'trailblazer/1','type':kind,'id':'reply-'+str(cursor),
+                 'request_id':task['request_id'],'payload':{'case':'fixture-case','state':'waiting_resource'}}
         events=[{'cursor':cursor,'kind':'message','peer':'fixture-trailblazer',
                  'body':'From Trailblazer, not typed by the operator:\\n'+json.dumps(message)}]
     print(json.dumps({'events':events,'cursor':cursor}))
 ''')
-        self.config = self.root/"dispatch.json"
+        self.config=self.root/"dispatch.json"
         self.config.write_text(json.dumps({"peer":"fixture-trailblazer",
             "vortex_command":[sys.executable,str(fake),"vortex"],
             "case_command":[sys.executable,str(fake),"case"],
             "vortex_dir":str(self.root/"vortex"),
-            "repos":{str(self.repo):["test \"$(cat value)\" = changed"]}}))
-        if pause:
-            (self.root/"pause").touch()
+            "repos":{str(self.repo):["test -f value"]}}))
         return base
 
-    def assign(self, ref, ok=True):
-        return self.call("assign", ref, "trailblazer", "--check", 'test "$(cat value)" = changed',
-                         "--dispatch-config", str(self.config), actor="codex", ok=ok)
+    def assign(self, ref, ok=True, extra=()):
+        return self.call("assign",ref,"trailblazer","--check","test -f value",
+                         "--dispatch-config",str(self.config),*extra,actor="codex",ok=ok)
 
-    def await_assignment(self, ref):
-        deadline = time.monotonic()+20
-        while time.monotonic()<deadline:
-            card=self.call("show",ref)
-            if card["column"] in ("done","blocked"):
-                return card
-            time.sleep(0.1)
-        self.fail("assignment did not finish: "+json.dumps(card))
-
-    def test_assignment_starts_once_and_verifies_candidate_without_merging(self):
-        ref=self.card("bounded change")
-        base=self.dispatch_fixture(ref)
-        first=self.assign(ref)
-        second=self.assign(ref)
-        self.assertEqual(first["assignment"],second["assignment"])
-        card=self.await_assignment(ref)
-        self.assertEqual(card["column"],"done",card)
-        self.assertEqual(card["claim"]["actor"],"trailblazer")
-        self.assertEqual(len((self.root/"sent").read_text().splitlines()),1)
-        self.assertEqual(self.run_git("rev-parse","HEAD").strip(),base)
-        self.assertEqual((self.repo/"value").read_text(),"base\n")
-        self.assertIn("verification",card["recent"][-1])
-
-    def test_assignment_blocks_when_reported_fixed_candidate_fails_real_check(self):
+    def test_assignment_exits_after_admission_and_delegates_supervision_to_elixir(self):
         ref=self.card()
-        self.dispatch_fixture(ref,changed=False)
-        self.assign(ref)
-        card=self.await_assignment(ref)
-        self.assertEqual(card["column"],"blocked",card)
-        self.assertIn("verification",card["recent"][-1])
-        self.assign(ref)
+        self.dispatch_fixture(ref)
+        result=self.assign(ref)
+        self.assertEqual(result["case"],"fixture-case")
+        task=json.loads((self.root/"sent").read_text().splitlines()[0])
+        self.assertEqual(task["payload"]["planner"],{"ref":ref,"deadline_seconds":14400})
+        with sqlite3.connect(self.root/"state/board.sqlite3") as db:
+            job=json.loads(db.execute("SELECT data FROM assignments WHERE ref=?",(ref,)).fetchone()[0])
+        self.assertNotIn("pid",job)
+        self.assertEqual(self.call("show",ref)["column"],"doing")
+        self.assertFalse((self.root/"followed").exists())
+
+    def test_assignment_is_idempotent_before_and_after_elixir_completion(self):
+        ref=self.card()
+        self.dispatch_fixture(ref)
+        first=self.assign(ref)
+        self.assertEqual(self.assign(ref)["assignment"],first["assignment"])
+        self.call("done",ref,"--evidence","Elixir verified candidate",actor="trailblazer")
+        self.assertEqual(self.assign(ref)["assignment"],first["assignment"])
         self.assertEqual(len((self.root/"sent").read_text().splitlines()),1)
 
     def test_assignment_cannot_steal_another_actors_card(self):
@@ -234,81 +203,90 @@ elif op in ('read','wait'):
         self.assertIn("self",self.assign(ref,ok=False)["error"])
         self.assertFalse((self.root/"sent").exists())
 
-    def test_dead_assignment_worker_blocks_without_replaying_dispatch(self):
+    def test_concurrent_assignment_returns_same_assignment_with_one_task(self):
+        # Adapted from the local coding model's verified candidate d77b848.
         ref=self.card()
-        self.dispatch_fixture(ref,pause=True)
-        self.assign(ref)
-        deadline=time.monotonic()+15
-        while not (self.root/"worker-ready").exists() and time.monotonic()<deadline:
-            time.sleep(0.05)
-        self.assertTrue((self.root/"worker-ready").exists())
-        with sqlite3.connect(self.root/"state/board.sqlite3") as db:
-            job=json.loads(db.execute("SELECT data FROM assignments WHERE ref=?",(ref,)).fetchone()[0])
-        os.killpg(job["pid"],signal.SIGKILL)
-        deadline=time.monotonic()+5
-        while time.monotonic()<deadline:
-            resumed=self.call("resume",actor="trailblazer")["cards"][0]
-            if resumed["state"]=="blocked": break
-            time.sleep(0.05)
-        self.assertEqual(resumed["state"],"blocked",resumed)
+        base=self.dispatch_fixture(ref)
+        cmd=self.base+["--actor","codex","assign",ref,"trailblazer","--check","test -f value",
+                       "--dispatch-config",str(self.config)]
+        workers=[subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) for _ in range(2)]
+        results=[p.communicate() for p in workers]
+        self.assertEqual([p.returncode for p in workers],[0,0],results)
+        assignments=[json.loads(out) for out,_ in results]
+        self.assertEqual(assignments[0]["assignment"],assignments[1]["assignment"])
+        self.assertEqual(self.call("show",ref)["column"],"doing")
+        self.assertEqual(len((self.root/"sent").read_text().splitlines()),1)
+        self.assertEqual(self.run_git("rev-parse","HEAD").strip(),base)
+        self.assertEqual((self.repo/"value").read_text(),"base\n")
+
+    def test_rejected_admission_blocks_without_automatic_retry(self):
+        ref=self.card()
+        self.dispatch_fixture(ref)
+        (self.root/"reject").touch()
+        self.assertIn("rejected",self.assign(ref,ok=False)["error"])
+        self.assertEqual(self.call("show",ref)["column"],"blocked")
         self.assign(ref)
         self.assertEqual(len((self.root/"sent").read_text().splitlines()),1)
 
-    def test_candidate_from_a_different_case_branch_cannot_become_done(self):
-        ref=self.card()
-        self.dispatch_fixture(ref)
-        path=self.root/"report.json"
-        report=json.loads(path.read_text())
-        report["branch"]="some-other-candidate"
-        path.write_text(json.dumps(report))
-        self.assign(ref)
-        card=self.await_assignment(ref)
-        self.assertEqual(card["column"],"blocked",card)
-        self.assertIn("candidate",card["recent"][-1])
-
-    def test_explicit_release_after_reconciliation_allows_a_fresh_assignment(self):
-        ref=self.card()
-        self.dispatch_fixture(ref,changed=False)
-        first=self.assign(ref)
-        self.assertEqual(self.await_assignment(ref)["column"],"blocked")
-        self.call("release",ref,"case closed; candidate failed verification; retry explicitly",actor="trailblazer")
-        candidate=self.root/"candidate"
-        (candidate/"value").write_text("changed\n")
-        subprocess.run(["git","-C",str(candidate),"commit","-qam",
-                        "Retry fixture bug:"+ref.split(":")[1]],check=True,capture_output=True)
-        report=json.loads((self.root/"report.json").read_text())
-        report["commit"]=subprocess.check_output(["git","-C",str(candidate),"rev-parse","HEAD"],text=True).strip()
-        (self.root/"report.json").write_text(json.dumps(report))
-        second=self.assign(ref)
-        self.assertNotEqual(first["assignment"],second["assignment"])
-        self.assertEqual(self.await_assignment(ref)["column"],"done")
-        self.assertEqual(len((self.root/"sent").read_text().splitlines()),2)
-
-    def test_unresponsive_admission_blocks_at_the_deadline_without_retry(self):
+    def test_no_admission_blocks_at_client_timeout_without_leaving_a_watcher(self):
         ref=self.card()
         self.dispatch_fixture(ref)
         config=json.loads(self.config.read_text())
-        config["deadline_seconds"]=2
+        config["admission_timeout_seconds"]=0.5
         self.config.write_text(json.dumps(config))
         (self.root/"hang-admission").touch()
+        self.assertIn("client timeout",self.assign(ref,ok=False)["error"])
+        self.assertEqual(self.call("show",ref)["column"],"blocked")
+
+    def test_resume_does_not_treat_absence_of_a_python_pid_as_failure(self):
+        ref=self.card()
+        self.dispatch_fixture(ref)
         self.assign(ref)
-        card=self.await_assignment(ref)
-        self.assertEqual(card["column"],"blocked",card)
-        self.assertIn("deadline",card["recent"][-1].lower())
+        held=self.call("resume",actor="trailblazer")["cards"][0]
+        self.assertEqual(held["state"],"doing")
+
+    def test_released_closed_case_can_be_assigned_afresh(self):
+        ref=self.card()
+        self.dispatch_fixture(ref)
+        first=self.assign(ref)
+        self.call("block",ref,"Elixir closed failed",actor="trailblazer")
+        self.call("release",ref,"case confirmed closed; deliberate retry",actor="trailblazer")
+        second=self.assign(ref)
+        self.assertNotEqual(first["assignment"],second["assignment"])
+        self.assertEqual(len((self.root/"sent").read_text().splitlines()),2)
+
+    def test_released_but_open_case_cannot_be_redispatched(self):
+        ref=self.card()
+        self.dispatch_fixture(ref)
         self.assign(ref)
+        self.call("block",ref,"Elixir deadline; case still running",actor="trailblazer")
+        self.call("release",ref,"attempted retry",actor="trailblazer")
+        (self.root/"case-status").write_text("open")
+        self.assertIn("not confirmed closed",self.assign(ref,ok=False)["error"])
         self.assertEqual(len((self.root/"sent").read_text().splitlines()),1)
 
-    def test_unresponsive_case_blocks_at_the_same_deadline_without_retry(self):
+    def test_closed_case_query_timeout_refuses_retry_with_clear_error(self):
+        with patch.object(assignment.subprocess, "run", side_effect=subprocess.TimeoutExpired("case", 10)):
+            with self.assertRaisesRegex(ValueError, "not confirmed closed"):
+                assignment.confirm_closed({"case":"fixture-case"}, {})
+
+    def test_elixir_deadline_is_passed_as_metadata_not_a_python_watch_timer(self):
         ref=self.card()
-        self.dispatch_fixture(ref,pause=True)
-        config=json.loads(self.config.read_text())
-        config["deadline_seconds"]=2
-        self.config.write_text(json.dumps(config))
-        self.assign(ref)
-        card=self.await_assignment(ref)
-        self.assertEqual(card["column"],"blocked",card)
-        self.assertIn("deadline",card["recent"][-1].lower())
-        self.assertEqual(len((self.root/"sent").read_text().splitlines()),1)
+        self.dispatch_fixture(ref)
+        self.assign(ref,extra=("--deadline-seconds","123"))
+        task=json.loads((self.root/"sent").read_text().splitlines()[0])
+        self.assertEqual(task["payload"]["planner"],{"ref":ref,"deadline_seconds":123})
+
+    def test_shared_card_requires_a_repository_part_before_assignment(self):
+        ref=self.card()
+        self.dispatch_fixture(ref)
+        moved=self.root/".bugs"
+        self.repo.rename(moved)
+        self.repo=moved
+        self.repos.write_text(str(moved)+"\n")
+        shared="shared:"+ref.split(":")[1]
+        self.assertIn("concrete repository",self.assign(shared,ok=False)["error"])
+        self.assertFalse((self.root/"sent").exists())
 
 
 if __name__ == "__main__":

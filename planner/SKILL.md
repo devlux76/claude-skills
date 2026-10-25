@@ -27,19 +27,21 @@ with a bounded requested change. Assignment starts the local worker through
 its existing VORTEX resource gate; adding an owner label alone does not launch
 work. Shared issues need a concrete repository part card first.
 
-The actor is `trailblazer`. Its supervisor supplies the current card and records
-acceptance, progress, verification and blockers through planner. It independently
-checks the exact candidate commit in a separate worktree before `done`; a
+The actor is `trailblazer`. The Python client claims the card, sends its current
+context and optional deadline, records acceptance/case ID, and exits. It starts
+no watcher. Trailblazer's Elixir companion owns execution supervision, planner
+updates, independent verification, deadlines and restart recovery under OTP.
+It checks the exact candidate commit in a separate worktree before `done`; a
 candidate is never merged or pushed automatically. Repeating `assign` returns
-the same assignment without dispatching again. A stopped supervisor is marked
-blocked on the next planner call; inspect its card and case before reconciling.
-One four-hour deadline covers admission, the coding result and independent
-verification; expiry blocks the card without retrying or cancelling a possibly
-running case. The trusted local dispatch config may set `deadline_seconds`.
+the same assignment without dispatching again. Use `--deadline-seconds N` to
+change Elixir's default four-hour result backstop; expiry blocks without
+retrying or cancelling a possibly running case. The client only has a bounded
+transport admission timeout, which blocks an unconfirmed request.
 After confirming the old case has stopped, explicitly `release` its card as
 actor `trailblazer`, then `assign` again for a fresh attempt; earlier assignment
 identities remain in the local record. Repeating `assign` without release never
-retries a blocked job.
+retries a blocked job, and a released card cannot be reassigned while its prior
+case is still open. An unconfirmed admission needs explicit reconciliation.
 Only repository/check pairs admitted by the local dispatch configuration may
 run; Trailblazer self-repair remains forbidden.
 
@@ -50,3 +52,6 @@ Record intent before consequential effects and the observed result afterwards. I
 Git-bug is the durable plan and progress record. Local SQLite claims serialize workers using this helper and survive compaction. Other tools can edit labels, so claims do not enforce all external workers. Claims never expire or automatically transfer. A stale owner requires explicit reconciliation; use its stable actor to release only after confirming it stopped. This helper is not the full lease/generation/reconciliation system tracked by `shared:40dbd63`.
 
 On a write error, inspect `resume` and the issue before repeating a side effect. `planner --actor glm sync <ref>` repairs an interrupted issue mirror without changing the claim or duplicating its comment. Never infer completion from a mail acknowledgement. Keep session IDs, credentials and private runtime paths out of issue text. Check the board on task boundaries or actual notices; do not run a model polling loop. Automatic VORTEX wakes remain quota-held until the operator resumes them.
+
+For service checks, candidate review and restart recovery, read
+[the operations handoff](references/operations.md).

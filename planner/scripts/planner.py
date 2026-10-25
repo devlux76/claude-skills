@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small local kanban interface to git-bug. No model or network dependency."""
+"""Local kanban over git-bug; explicit assignment uses Trailblazer's supervised service."""
 import argparse
 import contextlib
 import fcntl
@@ -83,6 +83,7 @@ def main():
     assign.add_argument("target", choices=["trailblazer"])
     assign.add_argument("--check", required=True)
     assign.add_argument("--file", action="append", default=[])
+    assign.add_argument("--deadline-seconds", type=int)
     assign.add_argument("--dispatch-config", type=Path,
                         default=Path.home()/".config/planner/trailblazer.json")
     add = sub.add_parser("add")
@@ -110,28 +111,6 @@ def main():
         db.execute("CREATE TABLE IF NOT EXISTS claims (ref TEXT PRIMARY KEY, actor TEXT, state TEXT, plan TEXT, notes TEXT)")
         db.execute("CREATE TABLE IF NOT EXISTS assignments (ref TEXT PRIMARY KEY, data TEXT NOT NULL)")
         claims = {r["ref"]: dict(r) for r in db.execute("SELECT * FROM claims")}
-        for row in db.execute("SELECT ref,data FROM assignments").fetchall():
-            job = json.loads(row["data"])
-            if job["state"] in ("done", "blocked"):
-                continue
-            if job.get("process") and assignment.process_identity(job.get("pid")) == job["process"]:
-                continue
-            job["state"] = "blocked"
-            job["reason"] = "Assignment supervisor stopped; reconcile the existing case before retrying."
-            held = claims.get(row["ref"])
-            if held and held["actor"] == "trailblazer" and held["state"] == "doing":
-                notes = json.loads(held["notes"])
-                notes.append({"n": len(notes)+1, "action": "block", "text": job["reason"]})
-                held.update(state="blocked", notes=json.dumps(notes))
-                with db:
-                    db.execute("UPDATE claims SET state=?,notes=? WHERE ref=?", ("blocked", held["notes"], row["ref"]))
-                owner_repo, _, owner_bug = row["ref"].partition(":")
-                if owner_repo in repos:
-                    card = show(repos[owner_repo], owner_bug)
-                    if card["status"] != "closed":
-                        mirror(repos[owner_repo], owner_bug, card, held)
-            with db:
-                db.execute("UPDATE assignments SET data=? WHERE ref=?", (json.dumps(job), row["ref"]))
         if a.command == "resume":
             return {"actor": a.actor, "cards": [{"ref": r["ref"], "state": r["state"], "plan": r["plan"],
                     "notes": [n for n in json.loads(r["notes"]) if n["action"] != "start"][-3:]} for r in claims.values()
@@ -186,13 +165,14 @@ def main():
             history = []
             if previous:
                 job = json.loads(previous[0])
-                if job["state"] == "blocked" and claim and claim["state"] == "todo":
+                if claim and claim["state"] == "todo":
+                    assignment.confirm_closed(job, assignment.configuration(a.dispatch_config))
                     history = job.get("previous", [])+[{
                         key: job[key] for key in ("id", "state", "case", "commit", "reason") if key in job}]
                 else:
                     if job["check"] != a.check or job["files"] != a.file:
                         raise ValueError("assignment already exists with different inputs; reconcile it first")
-                    return {"ref": ref, "assignment": job["id"], "column": column(b), "dispatched": False}
+                    return {"ref": ref, "assignment": job["id"], "case": job.get("case"), "column": column(b), "dispatched": False}
             if name == "shared":
                 raise ValueError("assign a concrete repository part card, not a shared issue")
             if column(b) == "done":
@@ -205,11 +185,15 @@ def main():
                 raise ValueError("trailblazer already has active work")
             config = assignment.configuration(a.dispatch_config)
             assignment.validate(repo, a.check, a.file, config)
+            seconds = a.deadline_seconds if a.deadline_seconds is not None else config["deadline_seconds"]
+            if seconds <= 0:
+                raise ValueError("deadline_seconds must be positive")
             plan = f"Implement {ref}; verification: {a.check}; return a candidate for review, without merging."
             notes = json.loads(claim["notes"]) if claim else []
             notes.append({"n": len(notes)+1, "action": "assign", "text": plan})
             job = {"id": "planner-"+uuid.uuid4().hex, "ref": ref, "repo": str(repo),
-                   "check": a.check, "files": a.file, "state": "assigned", "previous": history,
+                   "check": a.check, "files": a.file, "state": "admitting", "previous": history,
+                   "deadline_seconds": seconds,
                    "card": {"title": b["title"], "body": b["comments"][0]["message"],
                             "recent": [c["message"] for c in b["comments"][1:][-3:]]}}
             new_claim = {"actor": "trailblazer", "state": "doing", "plan": plan, "notes": json.dumps(notes)}
@@ -218,11 +202,23 @@ def main():
                            (ref, "trailblazer", "doing", plan, json.dumps(notes)))
                 db.execute("INSERT OR REPLACE INTO assignments VALUES (?,?)", (ref, json.dumps(job)))
             mirror(repo, bug, b, new_claim)
-            job["pid"] = assignment.launch(a, ref, job["id"])
-            job["process"] = assignment.process_identity(job["pid"])
+            try:
+                job["case"] = assignment.admit(job, config)
+                job["state"] = "accepted"
+                notes.append({"n": len(notes)+1, "action": "note",
+                              "text": "Result: accepted as case "+job["case"]+"; supervised by Elixir."})
+            except BaseException as error:
+                job.update(state="blocked", reason=str(error) or "admission client interrupted")
+                notes.append({"n": len(notes)+1, "action": "block", "text": job["reason"]})
+                new_claim["state"] = "blocked"
+            new_claim["notes"] = json.dumps(notes)
             with db:
                 db.execute("UPDATE assignments SET data=? WHERE ref=?", (json.dumps(job), ref))
-            return {"ref": ref, "assignment": job["id"], "column": "doing", "dispatched": True}
+                db.execute("UPDATE claims SET state=?,notes=? WHERE ref=?", (new_claim["state"], new_claim["notes"], ref))
+            mirror(repo, bug, show(repo, bug), new_claim)
+            if job["state"] == "blocked":
+                raise ValueError(job["reason"])
+            return {"ref": ref, "assignment": job["id"], "case": job["case"], "column": "doing", "dispatched": True}
         if a.command == "sync":
             if not claim or claim["actor"] != a.actor:
                 raise ValueError("only the recorded actor can repair its issue mirror")
@@ -241,10 +237,16 @@ def main():
                 raise ValueError("actor already has active work; finish, block or release it first")
             state, plan, text = "doing", a.plan, "plan: "+a.plan
         else:
+            text = a.evidence if a.command == "done" else a.text
+            if claim and claim["actor"] == a.actor and a.command in ("done", "block"):
+                last = json.loads(claim["notes"])[-1]
+                target = "done" if a.command == "done" else "blocked"
+                if claim["state"] == target and last["action"] == a.command and last["text"] == text:
+                    mirror(repo, bug, b, claim)
+                    return {"ref": ref, "column": target, "actor": a.actor, "recorded": "sync"}
             if not claim or claim["actor"] != a.actor or claim["state"] not in ("doing", "blocked"):
                 raise ValueError("start this card first; only its current actor may update it")
             plan = claim["plan"]
-            text = a.evidence if a.command == "done" else a.text
             if not text.strip():
                 raise ValueError("checkpoint, reason or evidence must not be empty")
             state = {"note": claim["state"], "block": "blocked", "release": "todo", "done": "done"}[a.command]
