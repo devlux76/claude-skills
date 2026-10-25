@@ -21,6 +21,8 @@ planner --actor glm release vortex:6ee260f 'Explicit handoff reason; next action
 planner add vortex --title 'Concrete task title' --plan 'Outcome and acceptance check' --priority p2
 ```
 
+Local planning: Qwen prioritizes unclaimed todo cards labelled `dispatch:ready`; only Trailblazer is dispatched. Mark a card ready with `git -C <repo> bug bug label <bug-id> dispatch:ready`. The system wakes on changes or completion with no timer, no paid fallback, and no automatic merge. Verify with `python3 planner/scripts/test_planner.py`.
+
 For well-specified coding work, use `planner assign <repo:bug> trailblazer
 --check '<project check>' [--file relative/path]`. Pick a current, ready card
 with a bounded requested change. Assignment starts the local worker through
