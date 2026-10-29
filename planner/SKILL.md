@@ -5,6 +5,30 @@ description: Plan and track local AI work with the planner command over git-bug.
 
 # Planner
 
+Planner owns planning and supervision through verified completion. Its job is to
+turn the operator's goal into executable steps, guide the worker, detect drift
+and blockers, and validate the result. The CLI and automatic selector are tools
+for that responsibility; sending an assignment does not discharge it.
+
+For each task:
+1. Ground the plan in available code, resolve interfaces and dependencies, and
+   define observable acceptance checks. A plan marker or restated requirements
+   alone is insufficient. Supply the plan directly or use an available research
+   route; expose missing planning capability instead of silently skipping it.
+2. Assign one bounded step with the context and tools the worker actually has.
+3. Supervise the recorded case and checkpoints. Acknowledged or running is not
+   evidence of progress. Investigate repeated exploration, unchanged stages,
+   admission uncertainty and drift; record the cause and revise the plan before
+   considering another attempt. Reconcile the existing worker first.
+4. Verify the exact candidate independently against the acceptance checks,
+   record evidence and remaining work, then plan the next dependent step. Keep
+   the parent incomplete until every required behavior is verified.
+
+Prefer OTP supervision and event-driven checks. Use the operator's requested
+check interval when scheduled supervision is authorized, stay quiet during
+normal progress, and reserve expensive coordinator work for planning, diagnosis
+and verification. Do not substitute frequent model polling for supervision.
+
 Use `planner` from any directory. It returns compact JSON and uses the repositories listed in `~/.config/bug-watch/repos`. Board and tracking commands call no model; explicit `assign` starts Trailblazer's local coding worker. References are `vortex:6ee260f`, `opencode:b7fe55b`, or `shared:40dbd63`. Use a stable actor name (`glm`, `codex`, `trailblazer`), never a session ID.
 
 ```sh

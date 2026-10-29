@@ -1,5 +1,14 @@
 # Planner and Trailblazer operations
 
+Planner owns the plan, execution supervision and verified outcome. Admission is
+a handoff checkpoint, not task completion. Before dispatch, resolve the starting
+code, ordered changes, interfaces and acceptance assertions. During execution,
+check for meaningful progress and drift, and keep evidence and blockers on the
+issue. After verification, plan the next dependency; a completed child cannot
+complete a parent with unmet requirements. The CLI transports plans, the brain
+selects work, and the companion supervises execution; the coordinating agent
+must close any planning or supervision gap between those components.
+
 Assignment is explicit: `planner assign <repo:bug> trailblazer --check '<check>'
 [--file path] [--deadline-seconds 14400]`. Use a current concrete-repository card,
 not a shared tracker issue or a stale mailbox request. The local configuration
