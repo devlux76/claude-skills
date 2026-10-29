@@ -188,12 +188,12 @@ def main():
             seconds = a.deadline_seconds if a.deadline_seconds is not None else config["deadline_seconds"]
             if seconds <= 0:
                 raise ValueError("deadline_seconds must be positive")
-            plan = f"Implement {ref}; verification: {a.check}; return a candidate for review, without merging."
+            plan = assignment.implementation_plan(b)
             notes = json.loads(claim["notes"]) if claim else []
             notes.append({"n": len(notes)+1, "action": "assign", "text": plan})
             job = {"id": "planner-"+uuid.uuid4().hex, "ref": ref, "repo": str(repo),
                    "check": a.check, "files": a.file, "state": "admitting", "previous": history,
-                   "deadline_seconds": seconds,
+                   "deadline_seconds": seconds, "plan": plan,
                    "card": {"title": b["title"], "body": b["comments"][0]["message"],
                             "recent": [c["message"] for c in b["comments"][1:][-3:]]}}
             new_claim = {"actor": "trailblazer", "state": "doing", "plan": plan, "notes": json.dumps(notes)}

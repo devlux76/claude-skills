@@ -39,7 +39,7 @@ class PlannerTest(unittest.TestCase):
         return json.loads(p.stdout if ok else p.stderr)
 
     def card(self, title="fixture task"):
-        return self.call("add", "repo", "--title", title, "--plan", "verify the result")["ref"]
+        return self.call("add", "repo", "--title", title, "--plan", "Implementation plan: 1. Change value to the requested marker; 2. Verify the marker with the admitted check.")["ref"]
 
     def test_workflow_survives_new_process_and_separates_completion_from_closure(self):
         ref = self.card()
@@ -164,6 +164,24 @@ elif op in ('read','wait'):
     def assign(self, ref, ok=True, extra=()):
         return self.call("assign",ref,"trailblazer","--check","test -f value",
                          "--dispatch-config",str(self.config),*extra,actor="codex",ok=ok)
+
+    def test_assignment_refuses_requirements_without_implementation_plan(self):
+        ref=self.call("add","repo","--title","unplanned task","--plan","Make fallback work; checks must pass")["ref"]
+        self.dispatch_fixture(ref)
+        self.assertIn("implementation plan",self.assign(ref,ok=False)["error"].lower())
+        self.assertFalse((self.root/"sent").exists())
+        self.assertIsNone(self.call("show",ref)["claim"])
+
+    def test_assignment_preserves_plan_after_newer_checkpoints(self):
+        ref=self.card()
+        self.dispatch_fixture(ref)
+        self.call("start",ref,"--plan","planning")
+        self.call("note",ref,"Implementation plan:\n1. Update value;\n2. Check its contents.")
+        for n in range(4): self.call("note",ref,"checkpoint "+str(n))
+        self.call("release",ref,"ready for implementation")
+        self.assign(ref)
+        task=json.loads((self.root/"sent").read_text().splitlines()[0])
+        self.assertIn("1. Update value", "\n".join(task["payload"]["design"]))
 
     def test_assignment_exits_after_admission_and_delegates_supervision_to_elixir(self):
         ref=self.card()

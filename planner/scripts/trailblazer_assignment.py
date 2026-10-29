@@ -32,6 +32,15 @@ def validate(repo, check, files, config):
             raise ValueError("task files must be repository-relative paths")
 
 
+def implementation_plan(card):
+    # Keep the latest explicit plan independently of the rolling checkpoints.
+    for comment in reversed(card["comments"]):
+        found = re.search(r"Implementation plan:\s*(\S[\s\S]*)", comment["message"])
+        if found:
+            return found.group(1).strip()
+    raise ValueError("coding assignment needs an Implementation plan: with ordered changes, interfaces and tests; plan or research the card first")
+
+
 def rpc(config, op, *args, timeout=10):
     try:
         result = subprocess.run(config["vortex_command"]+[op, "--dir", config["vortex_dir"], *args],
@@ -74,7 +83,7 @@ def admit(job, config):
                job["card"]["body"]+"\n\nCurrent checkpoints:\n"+"\n".join(job["card"]["recent"]))
     payload = {"repo":job["repo"], "request":request, "check":job["check"], "files":job["files"],
                "planner":{"ref":job["ref"], "deadline_seconds":job["deadline_seconds"]},
-               "design":["Current planner card "+job["ref"]+". Elixir owns execution, independent verification, planner updates and recovery. Never merge or push."]}
+               "design":["Implementation plan: "+job["plan"], "Current planner card "+job["ref"]+". Elixir owns execution, independent verification, planner updates and recovery. Never merge or push."]}
     send(config, job, "task", payload, remaining())
     while True:
         page = rpc(config, "wait", "--after", str(cursor), "--for", "message", "--timeout", "60", timeout=remaining())

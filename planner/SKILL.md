@@ -23,7 +23,15 @@ planner add vortex --title 'Concrete task title' --plan 'Outcome and acceptance 
 
 For well-specified coding work, use `planner assign <repo:bug> trailblazer
 --check '<project check>' [--file relative/path]`. Pick a current, ready card
-with a bounded requested change. Assignment starts the local worker through
+with a bounded requested change. Before assignment, record an `Implementation plan:` on the card (body or a
+checkpoint). Name the starting code actually present, ordered changes with exact
+files/interfaces, and test assertions. Resolve external APIs before dispatch;
+the coder has read/search tools, not git or shell access. Split broad tasks.
+`assign` transports the latest explicit plan and refuses a card without one; it
+does not generate a plan. The automatic brain selects work; its research route
+must produce implementation plans before coding.
+
+Assignment starts the local worker through
 its existing VORTEX resource gate; adding an owner label alone does not launch
 work. Shared issues need a concrete repository part card first.
 
