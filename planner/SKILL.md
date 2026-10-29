@@ -12,8 +12,10 @@ for that responsibility; sending an assignment does not discharge it.
 
 For each task:
 1. Ground the plan in available code, resolve interfaces and dependencies, and
-   define observable acceptance checks. A plan marker or restated requirements
-   alone is insufficient. Supply the plan directly or use an available research
+   define observable acceptance checks. Validate the check baseline in the actual
+   provisioned worktree before spending model time. Distinguish expected bug
+   failures from missing dependencies or other setup failures; repair setup first.
+   A plan marker or restated requirements alone is insufficient. Supply the plan directly or use an available research
    route; expose missing planning capability instead of silently skipping it.
 2. Assign one bounded step with the context and tools the worker actually has.
 3. Supervise the recorded case and checkpoints. Acknowledged or running is not
