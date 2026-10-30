@@ -233,6 +233,15 @@ elif op in ('read','wait'):
         self.assertFalse((self.root/"sent").exists())
         self.assertIsNone(self.call("show",ref)["claim"])
 
+    def test_recovery_source_is_transported_and_cannot_change_on_repeat(self):
+        ref=self.card()
+        self.dispatch_fixture(ref)
+        self.assign(ref,extra=("--replay-reply-from","fixture-source"))
+        task=json.loads((self.root/"sent").read_text().splitlines()[0])
+        self.assertEqual(task["payload"]["replay_reply_from"],"fixture-source")
+        self.assertIn("different inputs",self.assign(ref,ok=False,extra=("--replay-reply-from","other-source"))["error"])
+        self.assertEqual(len((self.root/"sent").read_text().splitlines()),1)
+
     def test_assignment_cannot_steal_another_actors_card(self):
         ref=self.card()
         self.dispatch_fixture(ref)

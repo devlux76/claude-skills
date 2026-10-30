@@ -88,6 +88,8 @@ def admit(job, config):
         payload["read_rounds"] = job["read_rounds"]
     if job.get("reasoning_budget_tokens") is not None:
         payload["reasoning_budget_tokens"] = job["reasoning_budget_tokens"]
+    if job.get("replay_reply_from") is not None:
+        payload["replay_reply_from"] = job["replay_reply_from"]
     send(config, job, "task", payload, remaining())
     while True:
         page = rpc(config, "wait", "--after", str(cursor), "--for", "message", "--timeout", "60", timeout=remaining())

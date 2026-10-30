@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -88,6 +89,7 @@ def main():
                         help="read/search exchanges before forced edits, 0..6 (default 6)")
     assign.add_argument("--reasoning-tokens", type=int,
                         help="explicit thinking budget; must leave room within the response cap")
+    assign.add_argument("--replay-reply-from", help="recover a closed failed case reply without coding inference")
     assign.add_argument("--dispatch-config", type=Path,
                         default=Path.home()/".config/planner/trailblazer.json")
     add = sub.add_parser("add")
@@ -169,6 +171,8 @@ def main():
                 raise ValueError("read_rounds must be an integer from 0 to 6")
             if a.reasoning_tokens is not None and a.reasoning_tokens < 0:
                 raise ValueError("reasoning budget must be nonnegative")
+            if a.replay_reply_from is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._-]{0,127}",a.replay_reply_from):
+                raise ValueError("invalid replay reply case")
             previous = db.execute("SELECT data FROM assignments WHERE ref=?", (ref,)).fetchone()
             history = []
             if previous:
@@ -178,7 +182,7 @@ def main():
                     history = job.get("previous", [])+[{
                         key: job[key] for key in ("id", "state", "case", "commit", "reason") if key in job}]
                 else:
-                    if job["check"] != a.check or job["files"] != a.file or job.get("read_rounds") != a.read_rounds or job.get("reasoning_budget_tokens") != a.reasoning_tokens:
+                    if job["check"] != a.check or job["files"] != a.file or job.get("read_rounds") != a.read_rounds or job.get("reasoning_budget_tokens") != a.reasoning_tokens or job.get("replay_reply_from") != a.replay_reply_from:
                         raise ValueError("assignment already exists with different inputs; reconcile it first")
                     return {"ref": ref, "assignment": job["id"], "case": job.get("case"), "column": column(b), "dispatched": False}
             if name == "shared":
@@ -203,6 +207,7 @@ def main():
                    "check": a.check, "files": a.file, "state": "admitting", "previous": history,
                    "deadline_seconds": seconds, "read_rounds": a.read_rounds, "plan": plan,
                    "reasoning_budget_tokens": a.reasoning_tokens,
+                   "replay_reply_from": a.replay_reply_from,
                    "card": {"title": b["title"], "body": b["comments"][0]["message"],
                             "recent": [c["message"] for c in b["comments"][1:][-3:]]}}
             new_claim = {"actor": "trailblazer", "state": "doing", "plan": plan, "notes": json.dumps(notes)}

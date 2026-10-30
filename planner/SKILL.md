@@ -80,6 +80,13 @@ uncertain stage stops the launcher; inspect its recorded
 assignment and profile before retrying. Keep supervising until cap cleanup and
 independent verification are confirmed.
 
+If a completed failed case contains an unapplied but schema-valid JSON reply,
+explicit recovery can use `--replay-reply-from CASE` on `assign` or the checked
+launcher. This starts a new verification-only case, never revives the source or
+regenerates code. Same peer/repository/check/base and complete reply are checked;
+the unchanged artifact still needs project checks, fresh review and independent
+verification. A failed recovery retains the artifact and does not retry coding.
+
 Assignment starts the local worker through
 its existing VORTEX resource gate; adding an owner label alone does not launch
 work. Shared issues need a concrete repository part card first.

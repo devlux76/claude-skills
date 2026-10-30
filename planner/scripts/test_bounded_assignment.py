@@ -25,6 +25,7 @@ if 'assign' in sys.argv: op='assign'
 if op=='rpc': op='bind' if 'CaseRecord.event' in sys.argv[2] else 'prepare'
 with (root/'events').open('a') as f: f.write(op+'\\n')
 if (root/'fail').exists() and (root/'fail').read_text()==op: sys.exit(2)
+if op=='assign': (root/'assign-args.json').write_text(json.dumps(sys.argv[1:]))
 if op=='prepare': print(json.dumps({'output_cap':16384}))
 if op=='assign': print(json.dumps({'case':'vortex-'+('a'*64),'dispatched':True}))
 ''')
@@ -71,6 +72,14 @@ if op=='assign': print(json.dumps({'case':'vortex-'+('a'*64),'dispatched':True})
         result = bounded.launch("opencode:1234567", "check", ["a.ts"], 0, 8192)
         self.assertEqual(result["output_cap"], 16384)
         self.assertEqual(result["reasoning_budget_tokens"], 8192)
+
+    def test_replay_flag_is_forwarded_and_invalid_sources_cannot_prepare(self):
+        with self.assertRaises(ValueError):
+            bounded.launch("opencode:1234567", "check", [], 0, 1024, "../invalid")
+        self.assertFalse(self.events.exists())
+        bounded.launch("opencode:1234567", "check", [], 0, 1024, "source-case")
+        args=json.loads((Path(self.tmp.name)/"assign-args.json").read_text())
+        self.assertEqual(args[args.index("--replay-reply-from")+1], "source-case")
 
     def test_rpc_programs_parse_before_any_live_operation(self):
         root = Path(self.tmp.name)
