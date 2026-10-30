@@ -63,6 +63,15 @@ discovery, use zero so the first coder call must submit edits. This is separate
 from output and wall-clock bounds. A repeated assignment cannot change its
 budget; confirm termination and explicitly reconcile before any fresh run.
 
+For this operator's bounded local trials, use
+`python3 scripts/bounded_assignment.py REF --check CHECK --file PATH --read-rounds 0 --wall-seconds 1800`
+from this skill directory. It checks preparation before admission, binds the
+exact returned case, then starts the existing native watchdog. It uses the
+4096-token trial profile and at most 30 minutes without changing the model or
+samplers. Any failed or uncertain stage stops the launcher; inspect its recorded
+assignment and profile before retrying. Keep supervising until cap cleanup and
+independent verification are confirmed.
+
 Assignment starts the local worker through
 its existing VORTEX resource gate; adding an owner label alone does not launch
 work. Shared issues need a concrete repository part card first.
