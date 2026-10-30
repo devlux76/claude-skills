@@ -205,6 +205,25 @@ elif op in ('read','wait'):
         self.assertEqual(self.assign(ref)["assignment"],first["assignment"])
         self.assertEqual(len((self.root/"sent").read_text().splitlines()),1)
 
+    def test_explicit_read_budget_reaches_admission_and_cannot_change_on_repeat(self):
+        ref=self.card()
+        self.dispatch_fixture(ref)
+        first=self.assign(ref,extra=("--read-rounds","0"))
+        task=json.loads((self.root/"sent").read_text().splitlines()[0])
+        self.assertEqual(task["payload"]["read_rounds"],0)
+        again=self.assign(ref,extra=("--read-rounds","0"))
+        self.assertEqual(again["assignment"],first["assignment"])
+        self.assertIn("different inputs",self.assign(ref,ok=False,extra=("--read-rounds","1"))["error"])
+        self.assertEqual(len((self.root/"sent").read_text().splitlines()),1)
+
+    def test_invalid_read_budget_does_not_claim_or_send(self):
+        ref=self.card()
+        self.dispatch_fixture(ref)
+        for invalid in ("-1","7"):
+            self.assertIn("read_rounds",self.assign(ref,ok=False,extra=("--read-rounds",invalid))["error"])
+        self.assertFalse((self.root/"sent").exists())
+        self.assertIsNone(self.call("show",ref)["claim"])
+
     def test_assignment_cannot_steal_another_actors_card(self):
         ref=self.card()
         self.dispatch_fixture(ref)

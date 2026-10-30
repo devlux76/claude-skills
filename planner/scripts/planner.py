@@ -84,6 +84,8 @@ def main():
     assign.add_argument("--check", required=True)
     assign.add_argument("--file", action="append", default=[])
     assign.add_argument("--deadline-seconds", type=int)
+    assign.add_argument("--read-rounds", type=int,
+                        help="read/search exchanges before forced edits, 0..6 (default 6)")
     assign.add_argument("--dispatch-config", type=Path,
                         default=Path.home()/".config/planner/trailblazer.json")
     add = sub.add_parser("add")
@@ -161,6 +163,8 @@ def main():
         if b["status"] == "closed":
             raise ValueError("closed issue; do not revive old work")
         if a.command == "assign":
+            if a.read_rounds is not None and not 0 <= a.read_rounds <= 6:
+                raise ValueError("read_rounds must be an integer from 0 to 6")
             previous = db.execute("SELECT data FROM assignments WHERE ref=?", (ref,)).fetchone()
             history = []
             if previous:
@@ -170,7 +174,7 @@ def main():
                     history = job.get("previous", [])+[{
                         key: job[key] for key in ("id", "state", "case", "commit", "reason") if key in job}]
                 else:
-                    if job["check"] != a.check or job["files"] != a.file:
+                    if job["check"] != a.check or job["files"] != a.file or job.get("read_rounds") != a.read_rounds:
                         raise ValueError("assignment already exists with different inputs; reconcile it first")
                     return {"ref": ref, "assignment": job["id"], "case": job.get("case"), "column": column(b), "dispatched": False}
             if name == "shared":
@@ -193,7 +197,7 @@ def main():
             notes.append({"n": len(notes)+1, "action": "assign", "text": plan})
             job = {"id": "planner-"+uuid.uuid4().hex, "ref": ref, "repo": str(repo),
                    "check": a.check, "files": a.file, "state": "admitting", "previous": history,
-                   "deadline_seconds": seconds, "plan": plan,
+                   "deadline_seconds": seconds, "read_rounds": a.read_rounds, "plan": plan,
                    "card": {"title": b["title"], "body": b["comments"][0]["message"],
                             "recent": [c["message"] for c in b["comments"][1:][-3:]]}}
             new_claim = {"actor": "trailblazer", "state": "doing", "plan": plan, "notes": json.dumps(notes)}

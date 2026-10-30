@@ -57,6 +57,12 @@ the coder has read/search tools, not git or shell access. Split broad tasks.
 does not generate a plan. The automatic brain selects work; its research route
 must produce implementation plans before coding.
 
+Set `--read-rounds N` (0..6, default6) to bound read/search exchanges before
+forced native edits. For a fully resolved plan that needs no further code
+discovery, use zero so the first coder call must submit edits. This is separate
+from output and wall-clock bounds. A repeated assignment cannot change its
+budget; confirm termination and explicitly reconcile before any fresh run.
+
 Assignment starts the local worker through
 its existing VORTEX resource gate; adding an owner label alone does not launch
 work. Shared issues need a concrete repository part card first.

@@ -84,6 +84,8 @@ def admit(job, config):
     payload = {"repo":job["repo"], "request":request, "check":job["check"], "files":job["files"],
                "planner":{"ref":job["ref"], "deadline_seconds":job["deadline_seconds"]},
                "design":["Implementation plan: "+job["plan"], "Current planner card "+job["ref"]+". Elixir owns execution, independent verification, planner updates and recovery. Never merge or push."]}
+    if job.get("read_rounds") is not None:
+        payload["read_rounds"] = job["read_rounds"]
     send(config, job, "task", payload, remaining())
     while True:
         page = rpc(config, "wait", "--after", str(cursor), "--for", "message", "--timeout", "60", timeout=remaining())
