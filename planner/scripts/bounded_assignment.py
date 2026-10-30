@@ -44,17 +44,20 @@ case :persistent_term.get(key, nil) do
       do: raise("token cap changed externally")
     record = Trailblazer.Loop.CaseRecord.get(id, inline: false)
     unless record.task["read_rounds"] == __ROUNDS__, do: raise("read budget mismatch")
+    unless record.task["reasoning_budget_tokens"] == __THINKING__, do: raise("thinking budget mismatch")
     :persistent_term.put(key, %{profile | case: id})
-    Trailblazer.Loop.CaseRecord.event(id, :trial_budget, %{max_tokens: 4096, wall_seconds: __SECONDS__, read_rounds: __ROUNDS__})
+    Trailblazer.Loop.CaseRecord.event(id, :trial_budget, %{max_tokens: 4096, wall_seconds: __SECONDS__, read_rounds: __ROUNDS__, reasoning_budget_tokens: __THINKING__})
   _ -> raise("trial profile ownership mismatch")
 end
 IO.puts("exact case bound")
 '''
 
 
-def launch(ref, check, files, read_rounds, seconds):
+def launch(ref, check, files, read_rounds, seconds, reasoning_tokens):
     if type(read_rounds) is not int or not 0 <= read_rounds <= 6 or type(seconds) is not int or not 0 < seconds <= 1800:
         raise ValueError("read_rounds must be 0..6 and wall seconds 1..1800")
+    if type(reasoning_tokens) is not int or not 0 <= reasoning_tokens < 4096:
+        raise ValueError("reasoning tokens must be 0..4095, leaving room for edits")
     if not WATCHDOG.is_file():
         raise ValueError("native watchdog missing; no admission attempted")
     env = os.environ | {"RELEASE_DISTRIBUTION": "name", "RELEASE_NODE": "trailblazer@127.0.0.1",
@@ -66,7 +69,8 @@ def launch(ref, check, files, read_rounds, seconds):
     run([str(RELEASE), "rpc", PREPARE.replace("__OWNER__", owner)])
     # A failed preparation raises above: it cannot fall through to admission.
     argv = [str(PLANNER), "--actor", "codex", "assign", ref, "trailblazer", "--check", check,
-            "--read-rounds", str(read_rounds), "--deadline-seconds", str(seconds)]
+            "--read-rounds", str(read_rounds), "--deadline-seconds", str(seconds),
+            "--reasoning-tokens", str(reasoning_tokens)]
     for path in files:
         argv += ["--file", path]
     result = json.loads(run(argv, timeout=90).stdout)
@@ -74,12 +78,12 @@ def launch(ref, check, files, read_rounds, seconds):
     if result.get("dispatched") is not True or not re.fullmatch(r"vortex-[0-9a-f]{64}", case):
         raise ValueError("fresh admission not confirmed; reconcile existing assignment/profile")
     print(json.dumps({"admitted_case": case}), file=sys.stderr, flush=True)
-    code = BIND.replace("__CASE__", case).replace("__OWNER__", owner).replace("__ROUNDS__", str(read_rounds)).replace("__SECONDS__", str(seconds))
+    code = BIND.replace("__CASE__", case).replace("__OWNER__", owner).replace("__ROUNDS__", str(read_rounds)).replace("__SECONDS__", str(seconds)).replace("__THINKING__", str(reasoning_tokens))
     run([str(RELEASE), "rpc", code])
     unit = "trailblazer-bounded-" + case.removeprefix("vortex-")[:12]
     run([str(SYSTEMD_RUN), "--user", "--unit=" + unit, "--collect", "--property=Type=exec",
          sys.executable, str(WATCHDOG), case, str(seconds)])
-    return result | {"watchdog_unit": unit, "wall_seconds": seconds, "output_cap": 4096, "read_rounds": read_rounds}
+    return result | {"watchdog_unit": unit, "wall_seconds": seconds, "output_cap": 4096, "read_rounds": read_rounds, "reasoning_budget_tokens": reasoning_tokens}
 
 
 if __name__ == "__main__":
@@ -89,9 +93,10 @@ if __name__ == "__main__":
     parser.add_argument("--file", action="append", default=[])
     parser.add_argument("--read-rounds", type=int, required=True)
     parser.add_argument("--wall-seconds", type=int, default=1800)
+    parser.add_argument("--reasoning-tokens", type=int, required=True)
     args = parser.parse_args()
     try:
-        print(json.dumps(launch(args.ref, args.check, args.file, args.read_rounds, args.wall_seconds)))
+        print(json.dumps(launch(args.ref, args.check, args.file, args.read_rounds, args.wall_seconds, args.reasoning_tokens)))
     except (ValueError, OSError, subprocess.SubprocessError, KeyError) as error:
         detail = error.stderr if isinstance(error, subprocess.CalledProcessError) else str(error)
         print(json.dumps({"error": "Launch stopped. Reconcile the recorded assignment/profile before retrying.",
