@@ -25,6 +25,7 @@ if 'assign' in sys.argv: op='assign'
 if op=='rpc': op='bind' if 'CaseRecord.event' in sys.argv[2] else 'prepare'
 with (root/'events').open('a') as f: f.write(op+'\\n')
 if (root/'fail').exists() and (root/'fail').read_text()==op: sys.exit(2)
+if op=='prepare': print(json.dumps({'output_cap':16384}))
 if op=='assign': print(json.dumps({'case':'vortex-'+('a'*64),'dispatched':True}))
 ''')
         driver.chmod(0o700)
@@ -57,13 +58,19 @@ if op=='assign': print(json.dumps({'case':'vortex-'+('a'*64),'dispatched':True})
         self.assertEqual(result["check_interval_seconds"], 1800)
         self.assertNotIn("wall_seconds", result)
         self.assertEqual(result["reasoning_budget_tokens"], 1024)
+        self.assertEqual(result["output_cap"], 16384)
         self.assertEqual(self.events.read_text().splitlines(), ["prepare", "assign", "bind", "--user"])
 
     def test_thinking_budget_cannot_consume_the_entire_reply(self):
-        for budget in [-1, 4096, True]:
+        for budget in [-1, True]:
             with self.assertRaises(ValueError):
                 bounded.launch("opencode:1234567", "check", [], 0, budget)
         self.assertFalse(self.events.exists())
+
+    def test_configured_output_budget_allows_a_larger_explicit_thinking_budget(self):
+        result = bounded.launch("opencode:1234567", "check", ["a.ts"], 0, 8192)
+        self.assertEqual(result["output_cap"], 16384)
+        self.assertEqual(result["reasoning_budget_tokens"], 8192)
 
     def test_rpc_programs_parse_before_any_live_operation(self):
         root = Path(self.tmp.name)

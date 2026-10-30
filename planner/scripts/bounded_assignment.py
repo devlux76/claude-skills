@@ -28,10 +28,11 @@ base = String.trim_trailing(Trailblazer.Config.get(:code_model_url), "/v1")
 unless response.status == 200 and response.body["data"] != [] and
        Enum.all?(response.body["data"], &(get_in(&1, ["status", "value"]) == "unloaded")),
        do: raise("model work not idle")
-previous = Application.fetch_env(:trailblazer, :code_model_max_tokens)
-:persistent_term.put(key, %{owner_ref: "__OWNER__", case: nil, previous: previous})
-Application.put_env(:trailblazer, :code_model_max_tokens, 4096)
-IO.puts("bounded profile prepared")
+cap = Trailblazer.Config.get(:code_model_max_tokens)
+unless Trailblazer.Model.valid_reasoning_budget?(__THINKING__, cap),
+  do: raise("thinking budget must leave room within configured output cap")
+:persistent_term.put(key, %{owner_ref: "__OWNER__", case: nil, output_cap: cap})
+IO.puts(Jason.encode!(%{output_cap: cap}))
 '''
 
 BIND = '''
@@ -40,14 +41,14 @@ owner = "__OWNER__"
 key = {:trailblazer, :bounded_smoke_profile}
 case :persistent_term.get(key, nil) do
   %{owner_ref: ^owner, case: nil} = profile ->
-    unless Application.get_env(:trailblazer, :code_model_max_tokens) == 4096,
+    unless Trailblazer.Config.get(:code_model_max_tokens) == profile.output_cap,
       do: raise("token cap changed externally")
     record = Trailblazer.Loop.CaseRecord.get(id, inline: false)
     unless record.task["read_rounds"] == __ROUNDS__, do: raise("read budget mismatch")
     unless record.task["reasoning_budget_tokens"] == __THINKING__, do: raise("thinking budget mismatch")
     :persistent_term.put(key, %{profile | case: id})
     :ok = Trailblazer.Planner.Companion.observe(id)
-    :ok = Trailblazer.Loop.CaseRecord.event(id, :attempt, %{stage: :supervision_policy, max_tokens: 4096, check_interval_seconds: 1800, read_rounds: __ROUNDS__, reasoning_budget_tokens: __THINKING__})
+    :ok = Trailblazer.Loop.CaseRecord.event(id, :attempt, %{stage: :supervision_policy, max_tokens: profile.output_cap, check_interval_seconds: 1800, read_rounds: __ROUNDS__, reasoning_budget_tokens: __THINKING__})
   _ -> raise("trial profile ownership mismatch")
 end
 IO.puts("exact case bound")
@@ -57,8 +58,8 @@ IO.puts("exact case bound")
 def launch(ref, check, files, read_rounds, reasoning_tokens):
     if type(read_rounds) is not int or not 0 <= read_rounds <= 6:
         raise ValueError("read_rounds must be 0..6")
-    if type(reasoning_tokens) is not int or not 0 <= reasoning_tokens < 4096:
-        raise ValueError("reasoning tokens must be 0..4095, leaving room for edits")
+    if type(reasoning_tokens) is not int or reasoning_tokens < 0:
+        raise ValueError("reasoning tokens must be nonnegative")
     if not CLEANUP.is_file():
         raise ValueError("native cleanup observer missing; no admission attempted")
     env = os.environ | {"RELEASE_DISTRIBUTION": "name", "RELEASE_NODE": "trailblazer@127.0.0.1",
@@ -67,7 +68,7 @@ def launch(ref, check, files, read_rounds, reasoning_tokens):
     def run(argv, timeout=40):
         return subprocess.run(argv, check=True, capture_output=True, text=True, env=env, cwd=ROOT, timeout=timeout)
     owner = uuid.uuid4().hex
-    run([str(RELEASE), "rpc", PREPARE.replace("__OWNER__", owner)])
+    prepared = json.loads(run([str(RELEASE), "rpc", PREPARE.replace("__OWNER__", owner).replace("__THINKING__", str(reasoning_tokens))]).stdout)
     # A failed preparation raises above: it cannot fall through to admission.
     argv = [str(PLANNER), "--actor", "codex", "assign", ref, "trailblazer", "--check", check,
             "--read-rounds", str(read_rounds),
@@ -84,7 +85,7 @@ def launch(ref, check, files, read_rounds, reasoning_tokens):
     unit = "trailblazer-cleanup-" + case.removeprefix("vortex-")[:12]
     run([str(SYSTEMD_RUN), "--user", "--unit=" + unit, "--collect", "--property=Type=exec",
          sys.executable, str(CLEANUP), case])
-    return result | {"cleanup_unit": unit, "check_interval_seconds": 1800, "output_cap": 4096, "read_rounds": read_rounds, "reasoning_budget_tokens": reasoning_tokens}
+    return result | {"cleanup_unit": unit, "check_interval_seconds": 1800, "output_cap": prepared["output_cap"], "read_rounds": read_rounds, "reasoning_budget_tokens": reasoning_tokens}
 
 
 if __name__ == "__main__":

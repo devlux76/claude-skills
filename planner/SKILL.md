@@ -70,7 +70,8 @@ exact returned case, disables its result deadline with `Companion.observe`,
 then starts a cleanup-only observer. Thirty minutes is the coordinator's check
 interval, not a runtime cap: let healthy slow work complete. The observer never
 stops a worker and restores the owned token profile only after completion.
-It uses the 4096-token trial profile. The explicit thinking budget
+It retains the configured total output budget and records it on admission;
+there is no smaller trial-only override. The explicit thinking budget
 reserves final-answer space within that total; high reasoning effort, model and
 samplers are unchanged. Direct `assign --reasoning-tokens N` also transports
 this optional task budget; omission keeps existing behavior. A reasoning-only
