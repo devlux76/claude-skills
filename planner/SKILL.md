@@ -64,10 +64,13 @@ from output and wall-clock bounds. A repeated assignment cannot change its
 budget; confirm termination and explicitly reconcile before any fresh run.
 
 For this operator's bounded local trials, use
-`python3 scripts/bounded_assignment.py REF --check CHECK --file PATH --read-rounds 0 --reasoning-tokens 1024 --wall-seconds 1800`
+`python3 scripts/bounded_assignment.py REF --check CHECK --file PATH --read-rounds 0 --reasoning-tokens 1024`
 from this skill directory. It checks preparation before admission, binds the
-exact returned case, then starts the existing native watchdog. It uses the
-4096-token trial profile and at most 30 minutes. The explicit thinking budget
+exact returned case, disables its result deadline with `Companion.observe`,
+then starts a cleanup-only observer. Thirty minutes is the coordinator's check
+interval, not a runtime cap: let healthy slow work complete. The observer never
+stops a worker and restores the owned token profile only after completion.
+It uses the 4096-token trial profile. The explicit thinking budget
 reserves final-answer space within that total; high reasoning effort, model and
 samplers are unchanged. Direct `assign --reasoning-tokens N` also transports
 this optional task budget; omission keeps existing behavior. A reasoning-only

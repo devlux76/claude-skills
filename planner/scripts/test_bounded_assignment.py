@@ -31,13 +31,13 @@ if op=='assign': print(json.dumps({'case':'vortex-'+('a'*64),'dispatched':True})
         watchdog = root / "watchdog.py"
         watchdog.touch()
         for key, value in {"ROOT": root, "RELEASE": driver, "PLANNER": driver,
-                           "SYSTEMD_RUN": driver, "WATCHDOG": watchdog}.items():
+                           "SYSTEMD_RUN": driver, "CLEANUP": watchdog}.items():
             patcher = patch.object(bounded, key, value)
             patcher.start()
             self.addCleanup(patcher.stop)
 
     def launch(self):
-        return bounded.launch("opencode:1234567", "check", ["a.ts"], 0, 1800, 1024)
+        return bounded.launch("opencode:1234567", "check", ["a.ts"], 0, 1024)
 
     def test_failed_preparation_cannot_dispatch(self):
         self.fail.write_text("prepare")
@@ -54,14 +54,15 @@ if op=='assign': print(json.dumps({'case':'vortex-'+('a'*64),'dispatched':True})
     def test_success_binds_the_admitted_case_before_starting_its_watchdog(self):
         result = self.launch()
         self.assertEqual(result["case"], "vortex-" + "a" * 64)
-        self.assertEqual(result["wall_seconds"], 1800)
+        self.assertEqual(result["check_interval_seconds"], 1800)
+        self.assertNotIn("wall_seconds", result)
         self.assertEqual(result["reasoning_budget_tokens"], 1024)
         self.assertEqual(self.events.read_text().splitlines(), ["prepare", "assign", "bind", "--user"])
 
     def test_thinking_budget_cannot_consume_the_entire_reply(self):
         for budget in [-1, 4096, True]:
             with self.assertRaises(ValueError):
-                bounded.launch("opencode:1234567", "check", [], 0, 1800, budget)
+                bounded.launch("opencode:1234567", "check", [], 0, budget)
         self.assertFalse(self.events.exists())
 
     def test_rpc_programs_parse_before_any_live_operation(self):

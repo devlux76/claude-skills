@@ -1,4 +1,4 @@
-"""Checked launcher for the operator's existing 4096-token, at-most-30min trial."""
+"""Checked launch with explicit token budgets and observation through completion."""
 import argparse
 import json
 import os
@@ -12,7 +12,7 @@ ROOT = Path.home() / "projects/trailblazer"
 RELEASE = ROOT / "_build/prod/rel/trailblazer/bin/trailblazer"
 PLANNER = Path.home() / ".local/bin/planner"
 SYSTEMD_RUN = "systemd-run"
-WATCHDOG = Path.home() / ".local/state/planner/trials/bounded_case_watchdog.py"
+CLEANUP = Path(__file__).with_name("case_cleanup.py")
 
 PREPARE = '''
 key = {:trailblazer, :bounded_smoke_profile}
@@ -46,20 +46,21 @@ case :persistent_term.get(key, nil) do
     unless record.task["read_rounds"] == __ROUNDS__, do: raise("read budget mismatch")
     unless record.task["reasoning_budget_tokens"] == __THINKING__, do: raise("thinking budget mismatch")
     :persistent_term.put(key, %{profile | case: id})
-    Trailblazer.Loop.CaseRecord.event(id, :trial_budget, %{max_tokens: 4096, wall_seconds: __SECONDS__, read_rounds: __ROUNDS__, reasoning_budget_tokens: __THINKING__})
+    :ok = Trailblazer.Planner.Companion.observe(id)
+    :ok = Trailblazer.Loop.CaseRecord.event(id, :attempt, %{stage: :supervision_policy, max_tokens: 4096, check_interval_seconds: 1800, read_rounds: __ROUNDS__, reasoning_budget_tokens: __THINKING__})
   _ -> raise("trial profile ownership mismatch")
 end
 IO.puts("exact case bound")
 '''
 
 
-def launch(ref, check, files, read_rounds, seconds, reasoning_tokens):
-    if type(read_rounds) is not int or not 0 <= read_rounds <= 6 or type(seconds) is not int or not 0 < seconds <= 1800:
-        raise ValueError("read_rounds must be 0..6 and wall seconds 1..1800")
+def launch(ref, check, files, read_rounds, reasoning_tokens):
+    if type(read_rounds) is not int or not 0 <= read_rounds <= 6:
+        raise ValueError("read_rounds must be 0..6")
     if type(reasoning_tokens) is not int or not 0 <= reasoning_tokens < 4096:
         raise ValueError("reasoning tokens must be 0..4095, leaving room for edits")
-    if not WATCHDOG.is_file():
-        raise ValueError("native watchdog missing; no admission attempted")
+    if not CLEANUP.is_file():
+        raise ValueError("native cleanup observer missing; no admission attempted")
     env = os.environ | {"RELEASE_DISTRIBUTION": "name", "RELEASE_NODE": "trailblazer@127.0.0.1",
                         "ERL_EPMD_ADDRESS": "127.0.0.1", "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}",
                         "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{os.getuid()}/bus"}
@@ -69,7 +70,7 @@ def launch(ref, check, files, read_rounds, seconds, reasoning_tokens):
     run([str(RELEASE), "rpc", PREPARE.replace("__OWNER__", owner)])
     # A failed preparation raises above: it cannot fall through to admission.
     argv = [str(PLANNER), "--actor", "codex", "assign", ref, "trailblazer", "--check", check,
-            "--read-rounds", str(read_rounds), "--deadline-seconds", str(seconds),
+            "--read-rounds", str(read_rounds),
             "--reasoning-tokens", str(reasoning_tokens)]
     for path in files:
         argv += ["--file", path]
@@ -78,12 +79,12 @@ def launch(ref, check, files, read_rounds, seconds, reasoning_tokens):
     if result.get("dispatched") is not True or not re.fullmatch(r"vortex-[0-9a-f]{64}", case):
         raise ValueError("fresh admission not confirmed; reconcile existing assignment/profile")
     print(json.dumps({"admitted_case": case}), file=sys.stderr, flush=True)
-    code = BIND.replace("__CASE__", case).replace("__OWNER__", owner).replace("__ROUNDS__", str(read_rounds)).replace("__SECONDS__", str(seconds)).replace("__THINKING__", str(reasoning_tokens))
+    code = BIND.replace("__CASE__", case).replace("__OWNER__", owner).replace("__ROUNDS__", str(read_rounds)).replace("__THINKING__", str(reasoning_tokens))
     run([str(RELEASE), "rpc", code])
-    unit = "trailblazer-bounded-" + case.removeprefix("vortex-")[:12]
+    unit = "trailblazer-cleanup-" + case.removeprefix("vortex-")[:12]
     run([str(SYSTEMD_RUN), "--user", "--unit=" + unit, "--collect", "--property=Type=exec",
-         sys.executable, str(WATCHDOG), case, str(seconds)])
-    return result | {"watchdog_unit": unit, "wall_seconds": seconds, "output_cap": 4096, "read_rounds": read_rounds, "reasoning_budget_tokens": reasoning_tokens}
+         sys.executable, str(CLEANUP), case])
+    return result | {"cleanup_unit": unit, "check_interval_seconds": 1800, "output_cap": 4096, "read_rounds": read_rounds, "reasoning_budget_tokens": reasoning_tokens}
 
 
 if __name__ == "__main__":
@@ -92,11 +93,10 @@ if __name__ == "__main__":
     parser.add_argument("--check", required=True)
     parser.add_argument("--file", action="append", default=[])
     parser.add_argument("--read-rounds", type=int, required=True)
-    parser.add_argument("--wall-seconds", type=int, default=1800)
     parser.add_argument("--reasoning-tokens", type=int, required=True)
     args = parser.parse_args()
     try:
-        print(json.dumps(launch(args.ref, args.check, args.file, args.read_rounds, args.wall_seconds, args.reasoning_tokens)))
+        print(json.dumps(launch(args.ref, args.check, args.file, args.read_rounds, args.reasoning_tokens)))
     except (ValueError, OSError, subprocess.SubprocessError, KeyError) as error:
         detail = error.stderr if isinstance(error, subprocess.CalledProcessError) else str(error)
         print(json.dumps({"error": "Launch stopped. Reconcile the recorded assignment/profile before retrying.",
