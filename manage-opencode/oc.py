@@ -53,7 +53,14 @@ PW = password()
 AUTH = {"authorization": "Basic " + base64.b64encode(f"opencode:{PW}".encode()).decode()} if PW else {}
 
 
-def call(method, path, body=None, ok=(200,)):
+class CallError(Exception):
+    """A failed request, raised instead of exiting when the caller asked for soft=True."""
+    def __init__(self, msg, code=None):
+        super().__init__(msg)
+        self.code = code
+
+
+def call(method, path, body=None, ok=(200,), soft=False):
     req = urllib.request.Request(URL + path, method=method, headers={**AUTH, "content-type": "application/json"},
                                  data=None if body is None else json.dumps(body).encode())
     try:
@@ -63,9 +70,18 @@ def call(method, path, body=None, ok=(200,)):
     except urllib.error.HTTPError as e:
         if e.code in ok:
             return None
-        sys.exit(f"{method} {path} -> {e.code}: {e.read()[:300].decode(errors='replace')}")
+        err = CallError(f"{method} {path} -> {e.code}: {e.read()[:300].decode(errors='replace')}", e.code)
     except urllib.error.URLError as e:
-        sys.exit(f"OpenCode server unreachable at {URL}: {e.reason} (systemctl --user status opencode)")
+        if isinstance(e.reason, TimeoutError):
+            err = CallError(f"OpenCode server unresponsive at {URL}: {method} {path} timed out (journalctl --user -u opencode)")
+        else:
+            err = CallError(f"OpenCode server unreachable at {URL}: {e.reason} (systemctl --user status opencode)")
+    except TimeoutError:
+        # urlopen raises a bare socket timeout (not URLError) when a connected server stops answering
+        err = CallError(f"OpenCode server unresponsive at {URL}: {method} {path} timed out (journalctl --user -u opencode)")
+    if soft:
+        raise err
+    sys.exit(str(err))
 
 
 def text_of(arg):
@@ -121,7 +137,12 @@ def cmd_status(a):
         sid = s["id"]
         flags = []
         for kind in ("form", "permission"):
-            n = len(pending(kind, sid))
+            try:
+                n = len(call("GET", f"/api/session/{sid}/{kind}", soft=True)["data"])
+            except CallError as e:
+                # one bad session (e.g. its worktree was deleted -> 404 LocationNotFound) must not hide the rest
+                flags.append("location missing" if e.code == 404 else f"{kind} check failed: {str(e)[:80]}")
+                break
             if n:
                 flags.append(f"{n} {kind}")
         state = "RUNNING" if sid in run else "idle"
