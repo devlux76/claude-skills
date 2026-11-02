@@ -12,7 +12,7 @@ OpenCode is our own fork (`~/vendor/opencode`, branch `local`), an OpenCode 2.x 
 ## Rules
 
 - **Assign over VORTEX, not with this tool.** One task = one brief file in the handoff dir + a conference + a DM naming the brief path and the worktree. `$OC new` is for puppeting and experiments only.
-- **One OpenCode session at a time, ever** (free service; parallel use risks a ban). `$OC status` before starting anything.
+- **One OpenCode session at a time, ever** (free service; parallel use risks a ban). `$OC status` before starting anything. This includes OpenCode's own subagents: briefs must say "subagents one at a time, never in parallel"; never ask it to fan out. More than one RUNNING session in `$OC status` = steer the parent to serialize at once.
 - **Record the assignment** on dispatch, or the monitor reads idle as healthy: `~/.local/share/claude-handoff/opencode-assignment.json` = `{"task", "conference", "brief", "worktree", "dispatched": <epoch s>, "done": false}`; `"done": true` when its report is accepted, `"parked": "<why>"` while on hold.
 - **Check every 15-30 min** while work is in flight (a session cron job runs `$OC monitor`; cron jobs die with the session, so re-create it) and after every report. Exit 0 = fine, 20 = attention.
 - **Verify every report**: the commit exists, read the diff, rerun at least the focused tests (the full suite for new code).
