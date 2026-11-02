@@ -276,10 +276,15 @@ def cmd_monitor(a):
         alerts.append(f"{len(run)} sessions RUNNING at once ({', '.join(run)}): parallel use risks a ban; "
                       "steer the parent to run subagents one at a time, interrupt extras")
     for sid in run or [s["id"] for s in call("GET", "/api/session?limit=1")["data"]]:
-        for kind in ("form", "permission"):
-            if pending(kind, sid):
-                alerts.append(f"{sid}: pending {kind} (oc.py {kind}s {sid})")
-        ms = messages(sid, 30)
+        try:
+            for kind in ("form", "permission"):
+                if call("GET", f"/api/session/{sid}/{kind}", soft=True)["data"]:
+                    alerts.append(f"{sid}: pending {kind} (oc.py {kind}s {sid})")
+            ms = call("GET", f"/api/session/{sid}/message?limit=30", soft=True)["data"]
+        except CallError as e:
+            # one unreadable session (e.g. deleted worktree) must not hide the other alerts
+            alerts.append(f"{sid}: " + ("location missing (worktree deleted?)" if e.code == 404 else f"check failed: {str(e)[:100]}"))
+            continue
         last = max((m["time"].get("completed") or m["time"]["created"] for m in ms), default=0)
         if sid in run and last and time.time() - last / 1000 > a.stall_min * 60:
             alerts.append(f"{sid}: running but no new message for {ago(last)}: read it, interrupt + steer")
