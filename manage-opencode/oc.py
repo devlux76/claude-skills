@@ -271,6 +271,10 @@ def cmd_monitor(a):
             alerts.append(f"assigned worktree {wt} still missing after {int(age // 60)}m")
     else:
         print("no open assignment")
+    if len(run) > 1:
+        # Free service: concurrent sessions (including OpenCode's own subagents) risk a ban.
+        alerts.append(f"{len(run)} sessions RUNNING at once ({', '.join(run)}): parallel use risks a ban; "
+                      "steer the parent to run subagents one at a time, interrupt extras")
     for sid in run or [s["id"] for s in call("GET", "/api/session?limit=1")["data"]]:
         for kind in ("form", "permission"):
             if pending(kind, sid):
