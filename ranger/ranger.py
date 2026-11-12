@@ -2,11 +2,10 @@
 """ranger — codebase exploration via LFM3-1.7B on a local llama-server.
 
 Delegates code search to a local LFM3 model. Asks for candidate locations
-first — from Trailblazer's definition graph and vectors when it watches the
-repository, otherwise from ranger's own semantic index (index.py) — then lets
-the model verify them with Grep/Glob/Read through the OpenAI-compatible endpoint
-and its native tool calling. Returns whatever the model says when it stops
-calling tools.
+first — from Trailblazer's definition graph and vectors, for a repository it
+watches (scout exits 1 with a hint otherwise) — then lets the model verify them
+with Grep/Glob/Read through the OpenAI-compatible endpoint and its native tool
+calling. Returns whatever the model says when it stops calling tools.
 
 Usage:
     python3 ranger.py -C <repo> -q "<question>"
@@ -24,7 +23,10 @@ from pathlib import Path
 
 import httpx
 
-# The retrieval layer: candidate locations and the graph, no model.
+# The retrieval layer: candidate locations and the graph, no model. Scout's canonical
+# source is ~/projects/scout (install.sh's SCOUT_SRC); an installed skill dir keeps its
+# own copies beside this file and those win, since sys.path[0] is this directory.
+sys.path.append(str(Path.home() / "projects" / "scout"))
 from scout import UNSET, index_candidates, skill_modules, trailblazer_ready, trailblazer_status  # noqa: F401
 
 # Mirai's llama.cpp router (user service mirai-llama-router): one copy of each
@@ -215,7 +217,7 @@ GRAPH_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "Uses",
-            "description": "Ask the repository's definition graph every definition that uses a name, as path:line qualified (kind), where kind is calls, references, imports, tests or aliases, marked 'uncertain' when the graph could not settle which definition the reference means. Use it before calling two similarly named symbols related or independent.",
+            "description": "Ask the repository's definition graph every definition that uses a name, as path:line qualified (kind), where kind is calls, references, imports, tests or aliases, marked 'uncertain' when the graph could not settle which definition the reference means, followed by how it was inferred when the graph says (e.g. 'default module': a call through an injected module). Use it before calling two similarly named symbols related or independent.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -265,7 +267,7 @@ def build_system_prompt(work_dir, graph_tools=False):
         "- The repository has a definition graph: Where NAME says where a name is declared "
         "(path:start-end) and Uses NAME lists every definition that uses it with its line and "
         "the kind of use. Prefer those over Grep for 'where is X defined' and 'what uses X'; "
-        "check an edge marked uncertain before relying on it.\n"
+        "check an edge marked uncertain before relying on it, and report its qualifier with it.\n"
         if graph_tools else ""
     )
     return (
