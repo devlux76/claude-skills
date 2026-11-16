@@ -178,7 +178,7 @@ Last refresh {r['generated']}, {r['intervals']} hourly intervals over {DAYS} day
 
 {chr(10).join(verdicts(r))}
 
-**Why:** Anthropic sometimes discounts Opus without notice, so list prices don't tell you which model is cheapest on the plan (operator, 2026-11-15). On 11-15 Sonnet measured about 3x Opus per token.
+**Why:** Anthropic sometimes discounts Opus without notice, so list prices don't tell you which model is cheapest on the plan (operator, 2026-11-15). Remote (cloud) sessions and claude.ai use count against the 5h limit but leave no local transcript, so their cost lands on whatever model was active locally; the 11-15 Sonnet ~3x figure was confounded by a remote Fable session and is not a valid measurement.
 **How to apply:** when choosing a subagent or worker model, prefer the cheapest model that is good enough for the task; a model that is not cheaper than Opus gets no work Opus could do better. Quality still matters: Opus is the best. Treat [low data] as a hint, not a ruling. Related: [[reference-usage-ledger]] [[reference-usage-watch]]
 """
     tmp = MEMORY + '.tmp'
