@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""Estimate what each Claude model really costs against the plan's 5-hour limit.
+
+Fits hourly rises in the 5h % (from the usage-ledger, ~/.local/state/usage-ledger/turns.tsv)
+against each model's hourly tokens (from every transcript, subagents included), weighting
+tokens at list ratios (input 1, cache write 1.25, cache read 0.1, output 5). Non-negative
+least squares by subset enumeration, 80% bootstrap ranges. Pure stdlib.
+
+  model-cost-report            refresh, print the report
+  model-cost-report --hook     SessionStart hook: refresh (cached 10 min), rewrite the memory
+                               file, emit a short summary as additionalContext (skipped in
+                               background jobs, where CLAUDE_JOB_DIR is set)
+"""
+import glob, itertools, json, os, random, sys, time
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+DAYS = 7
+LEDGER = os.path.expanduser('~/.local/state/usage-ledger/turns.tsv')
+STATE = os.path.expanduser('~/.local/state/usage-ledger/model-costs.json')
+MEMORY = os.path.expanduser('~/.claude/projects/-home-mirai/memory/reference_model_cost_rates.md')
+MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2']
+SHORT = {m: m.split('-')[1].capitalize() for m in MODELS}
+MST = timezone(timedelta(hours=-7))
+
+
+def hourly_tokens(since):
+    seen, hours = set(), defaultdict(lambda: defaultdict(float))
+    for f in glob.glob(os.path.expanduser('~/.claude/projects/**/*.jsonl'), recursive=True):
+        if os.path.getmtime(f) < since.timestamp():
+            continue
+        for line in open(f, errors='ignore'):
+            if '"usage"' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            m = d.get('message') or {}
+            u, mod = m.get('usage'), m.get('model')
+            if not u or mod not in MODELS:
+                continue
+            key = (m.get('id'), d.get('requestId'))
+            if key in seen:
+                continue
+            seen.add(key)
+            ts = d.get('timestamp', '')[:13]
+            if ts < since.strftime('%Y-%m-%dT%H'):
+                continue
+            hours[ts][mod] += (u.get('input_tokens', 0) + 1.25 * u.get('cache_creation_input_tokens', 0)
+                               + 0.1 * u.get('cache_read_input_tokens', 0) + 5 * u.get('output_tokens', 0)) / 1e6
+    return hours
+
+
+def ledger_points(since):
+    last = {}
+    for line in open(LEDGER).readlines()[1:]:
+        c = line.rstrip('\n').split('\t')
+        try:
+            t = datetime.strptime(c[0], '%Y-%m-%d %H:%M:%S').replace(tzinfo=MST).astimezone(timezone.utc)
+            p = float(c[9])
+        except (ValueError, IndexError):
+            continue
+        if t >= since:
+            last[t.strftime('%Y-%m-%dT%H')] = p
+    return last
+
+
+def design(hours, pts):
+    X, y = [], []
+    keys = sorted(pts)
+    for a, b in zip(keys, keys[1:]):
+        ta, tb = (datetime.strptime(k, '%Y-%m-%dT%H') for k in (a, b))
+        d = pts[b] - pts[a]
+        if d < 0 or tb - ta > timedelta(hours=4):  # window reset or gap
+            continue
+        row, h = [0.0] * len(MODELS), ta + timedelta(hours=1)
+        while h <= tb:
+            for i, m in enumerate(MODELS):
+                row[i] += hours.get(h.strftime('%Y-%m-%dT%H'), {}).get(m, 0)
+            h += timedelta(hours=1)
+        X.append(row)
+        y.append(d)
+    return X, y
+
+
+def solve(A, b):
+    n = len(b)
+    M = [A[i][:] + [b[i]] for i in range(n)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(M[r][c]))
+        if abs(M[p][c]) < 1e-12:
+            return None
+        M[c], M[p] = M[p], M[c]
+        for r in range(n):
+            if r != c:
+                f = M[r][c] / M[c][c]
+                M[r] = [x - f * z for x, z in zip(M[r], M[c])]
+    return [M[i][n] / M[i][i] for i in range(n)]
+
+
+def nnls(X, y):
+    k = len(MODELS)
+    best, best_r = [0.0] * k, sum(v * v for v in y)
+    for r in range(1, k + 1):
+        for S in itertools.combinations(range(k), r):
+            A = [[sum(x[i] * x[j] for x in X) for j in S] for i in S]
+            b = [sum(x[i] * v for x, v in zip(X, y)) for i in S]
+            s = solve(A, b)
+            if s is None or min(s) < 0:
+                continue
+            c = [0.0] * k
+            for i, v in zip(S, s):
+                c[i] = v
+            res = sum((v - sum(ci * xi for ci, xi in zip(c, x))) ** 2 for x, v in zip(X, y))
+            if res < best_r:
+                best, best_r = c, res
+    return best
+
+
+def refresh():
+    since = datetime.now(timezone.utc) - timedelta(days=DAYS)
+    X, y = design(hourly_tokens(since), ledger_points(since))
+    c = nnls(X, y)
+    rng, boots = random.Random(0), []
+    for _ in range(200):
+        idx = [rng.randrange(len(y)) for _ in y]
+        boots.append(nnls([X[i] for i in idx], [y[i] for i in idx]))
+    out = {'generated': datetime.now(MST).strftime('%Y-%m-%d %H:%M MST'), 'intervals': len(y), 'models': {}}
+    for i, m in enumerate(MODELS):
+        s = sorted(b[i] for b in boots)
+        tok = sum(x[i] for x in X)
+        out['models'][m] = {'cost': c[i], 'lo': s[len(s) // 10], 'hi': s[9 * len(s) // 10],
+                            'active_hours': sum(1 for x in X if x[i] > 0), 'meq_tokens': tok, 'pct_share': c[i] * tok}
+    json.dump(out, open(STATE, 'w'), indent=1)
+    return out
+
+
+def verdicts(r):
+    op = r['models']['claude-opus-5-5']['cost'] or 1e-9
+    lines = []
+    for m in MODELS[1:]:
+        v = r['models'][m]
+        if v['active_hours'] == 0:
+            continue
+        low = v['active_hours'] < 10
+        if v['hi'] < op:
+            word = 'cheaper than Opus per token: use it for work it handles well'
+        elif v['lo'] >= 0.8 * op:
+            word = 'NOT cheaper than Opus per token: use Opus unless the task needs this model'
+        else:
+            word = 'unclear vs Opus'
+        lines.append(f"- {SHORT[m]}: {v['cost'] / op:.1f}x Opus ({word})" + (' [low data]' if low else ''))
+    return lines
+
+
+def render(r):
+    t = ['| Model | %5h per M weighted tok | 80% range | x Opus | active h | share of 5h % |', '|---|---|---|---|---|---|']
+    op = r['models']['claude-opus-5-5']['cost'] or 1e-9
+    for m in MODELS:
+        v = r['models'][m]
+        t.append(f"| {SHORT[m]} | {v['cost']:.2f} | {v['lo']:.2f}-{v['hi']:.2f} | {v['cost'] / op:.1f} "
+                 f"| {v['active_hours']} | {v['pct_share']:.0f} |")
+    return t
+
+
+def write_memory(r):
+    body = f"""---
+name: reference-model-cost-rates
+description: Auto-refreshed per-model plan cost (5h % per token, Opus vs Sonnet vs Haiku vs Fable); use it to decide which model gets delegated work
+metadata:
+  type: reference
+---
+Auto-generated by `model-cost-report` (skill `model-cost`, SessionStart hook on startup and /clear). Do not hand-edit; it is overwritten.
+Last refresh {r['generated']}, {r['intervals']} hourly intervals over {DAYS} days. Weighted tokens = input + 1.25 cache write + 0.1 cache read + 5 output.
+
+{chr(10).join(render(r))}
+
+{chr(10).join(verdicts(r))}
+
+**Why:** Anthropic sometimes discounts Opus without notice, so list prices don't tell you which model is cheapest on the plan (operator, 2026-11-15). On 11-15 Sonnet measured about 3x Opus per token.
+**How to apply:** when choosing a subagent or worker model, prefer the cheapest model that is good enough for the task; a model that is not cheaper than Opus gets no work Opus could do better. Quality still matters: Opus is the best. Treat [low data] as a hint, not a ruling. Related: [[reference-usage-ledger]] [[reference-usage-watch]]
+"""
+    tmp = MEMORY + '.tmp'
+    open(tmp, 'w').write(body)
+    os.replace(tmp, MEMORY)
+
+
+def main():
+    hook = '--hook' in sys.argv
+    if hook:
+        try:
+            json.load(sys.stdin)
+        except ValueError:
+            pass
+        if os.environ.get('CLAUDE_JOB_DIR'):
+            return
+    try:
+        if hook and time.time() - os.path.getmtime(STATE) < 600:
+            r = json.load(open(STATE))
+        else:
+            r = refresh()
+            write_memory(r)
+    except Exception as e:
+        open(os.path.expanduser('~/.local/state/usage-ledger/errors.log'), 'a').write(
+            f'{datetime.now().isoformat()} model-cost-report: {type(e).__name__}: {e}\n')
+        return
+    if hook:
+        ctx = (f"Model plan-cost rates (refreshed {r['generated']}; details in memory reference_model_cost_rates.md):\n"
+               + '\n'.join(verdicts(r)) + '\nDistribute delegated work accordingly.')
+        print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': ctx}}))
+    else:
+        print('\n'.join(render(r) + [''] + verdicts(r)))
+
+
+if __name__ == '__main__':
+    main()
+    sys.exit(0)
