@@ -7,6 +7,8 @@ each request in API dollars at live per-model list prices (PRICES). Non-negative
 least squares by subset enumeration, 80% bootstrap ranges. Pure stdlib.
 
   model-cost-report            refresh, print the report
+  model-cost-report --days N   fit only the last N days (default 7; 1 = last 24 hours); a custom
+                               window prints only, it does not overwrite the cached state or memory
   model-cost-report --hook     SessionStart hook: refresh (cached 10 min), rewrite the memory
                                file, emit a short summary as additionalContext (skipped in
                                background jobs, where CLAUDE_JOB_DIR is set)
@@ -15,7 +17,7 @@ import glob, itertools, json, os, random, sys, time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-DAYS = 7
+DEFAULT_DAYS = DAYS = 7
 LEDGER = os.path.expanduser('~/.local/state/usage-ledger/turns.tsv')
 STATE = os.path.expanduser('~/.local/state/usage-ledger/model-costs.json')
 MEMORY = os.path.expanduser('~/.claude/projects/-home-mirai/memory/reference_model_cost_rates.md')
@@ -148,7 +150,8 @@ def refresh():
         tok = sum(x[i] for x in X)
         out['models'][m] = {'cost': c[i], 'lo': s[len(s) // 10], 'hi': s[9 * len(s) // 10],
                             'active_hours': sum(1 for x in X if x[i] > 0), 'meq_tokens': tok, 'pct_share': c[i] * tok}
-    json.dump(out, open(STATE, 'w'), indent=1)
+    if DAYS == DEFAULT_DAYS:
+        json.dump(out, open(STATE, 'w'), indent=1)
     return out
 
 
@@ -203,7 +206,10 @@ Last refresh {r['generated']}, {r['intervals']} hourly intervals over {DAYS} day
 
 
 def main():
+    global DAYS
     hook = '--hook' in sys.argv
+    if '--days' in sys.argv:
+        DAYS = float(sys.argv[sys.argv.index('--days') + 1])
     if hook:
         try:
             json.load(sys.stdin)
@@ -216,7 +222,8 @@ def main():
             r = json.load(open(STATE))
         else:
             r = refresh()
-            write_memory(r)
+            if DAYS == DEFAULT_DAYS:
+                write_memory(r)
     except Exception as e:
         open(os.path.expanduser('~/.local/state/usage-ledger/errors.log'), 'a').write(
             f'{datetime.now().isoformat()} model-cost-report: {type(e).__name__}: {e}\n')
