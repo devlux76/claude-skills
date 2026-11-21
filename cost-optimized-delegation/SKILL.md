@@ -7,7 +7,7 @@ description: Use when delegating work through opencode serve and choosing which 
 
 ## Overview
 
-Delegation runs through our OpenCode server (assign over VORTEX; see **REQUIRED SUB-SKILL:** manage-opencode for monitoring and puppeting). This skill is about **which model to pick**.
+Delegation runs through our OpenCode server (see **REQUIRED SUB-SKILL:** manage-opencode for assigning, monitoring and puppeting). This skill is about **which model to pick**.
 
 **The scarce resource is Claude (you), not any delegation tier.** The user pays ~$20/mo for Claude and runs out of credit *several times a day* — they cannot afford the Claude Max program. The opencode/ollama subscriptions exist precisely so that build/run/diagnose/repair grunt work does NOT consume Claude credit. So: **delegate freely; the point is to keep Claude available for judgment.**
 
